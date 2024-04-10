@@ -1,9 +1,12 @@
 import json
-from threading import Thread
+from multiprocessing import Process, current_process
 import logging
 import logging.config
+import os
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import psutil
+from setproctitle import setproctitle
 
 from amarillo.plugins.enhancer.configuration import configure_enhancer_services
 from amarillo.utils.container import container
@@ -41,6 +44,21 @@ class EventHandler(FileSystemEventHandler):
 
 
 def run_enhancer():
+    setproctitle("amarillo-enhancer")
+
+    # check if another enhancer process is already running, if it is then exit
+    this_proc = psutil.Process(os.getpid())
+
+    for proc in psutil.process_iter():
+        try:
+            # Check if process name is enhancer and we share a grandparent with it (parent should be the uvicorn worker)
+            # Keep the enhancer process with lowest pid
+            if this_proc.pid > proc.pid and "amarillo-enhancer" in proc.name() and this_proc.parents()[1].pid == proc.parents()[1].pid :
+                logger.info("Enhancer already running")
+                return
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
+            logger.error(e)
+
     logger.info("Hello Enhancer")
 
     configure_enhancer_services()
@@ -69,9 +87,10 @@ def run_enhancer():
 
         logger.info("Goodbye Enhancer")
 
-def setup(app):
-    thread = Thread(target=run_enhancer, daemon=True)
-    thread.start()
+def setup(app):        
+    process = Process(name="amarillo-enhancer", target=run_enhancer)
+    process.daemon = True
+    process.start()
 
 
 if __name__ == "__main__":
